@@ -1,0 +1,149 @@
+#install Miniconda
+bash Miniconda3-latest-linux.sh
+conda install fastqc
+
+fastqc -h # see all the functions
+fastqc sample1.fastq.gz #check the quality
+
+
+trimmomatic PE -threads 20 \
+L-2_1.fastq.gz L-2_2.fastq.gz \
+L2_paried_clean_R1.fastq.gz \
+L2_unpair_clean_R1.fastq.gz \
+L2_paried_clean_R2.fastq.gz \
+L2_unpair_clean_R2.fastq.gz \
+ILLUMINACLIP:/home/ly/miniconda3/share/trimmomatic-0.39-2/adapters/TruSeq3-PE-2.fa:2:30:10:1:true \
+LEADING:3 TRAILING:3 \
+SLIDINGWINDOW:4:20 MINLEN:5 TOPHRED33
+
+#alignment and get bam file
+
+bowtie2-build kp.fa kpref
+bowtie2 -x /home/ly/desktop/bbr-trans/GenomeDir/kpref -p 20 -1 C0_paried_clean_R1.fastq.gz -2 C0_paried_clean_R2.fastq.gz -S paired.sam
+
+featureCounts -p -M --fraction -a /home/ly/desktop/bbr-trans/GenomeDir/kp.gtf -t gene -o out_counts.txt -T 20 -g gene_id /home/ly/desktop/bbr-trans/C0/paired.sam
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+samtools view -bS -o alignments.bam paried.sam
+samtools view -bS -o Aligned.out.bam Aligned.out.sam
+samtools sort Aligned.out.bam align.sort
+
+
+STAR --runMode genomeGenerate --genomeFastaFiles kp.fa --sjdbGTFfile kp.gtf --runThreadN 20
+
+STAR runThreadN 20 --genomeDir /home/ly/desktop/bbr-trans/GenomeDir \
+--readFilesCommand zcat \
+--readFilesIn H2_paried_clean_R1.fastq.gz H2_paried_clean_R2.fastq.gz \
+--quantMode TranscriptomeSAM GeneCounts\
+
+--outSAMtype BAM SortedByCoordinate \
+--outBAMsortingThreadN 20 \
+--outFileNamePrefix /home/ly/desktop/bbr-trans/H2 \ #no need
+
+
+#genome assembly
+cufflinks -p 20 paired.sam
+
+
+STAR and RSEM    #expressing analysis
+rsem-prepare-reference --gtf kp.gtf kp.fa /home/ly/desktop/bbr-trans/GenomeDir/kp
+
+
+rsem-calculate-expression --paired-end \
+--alignments -p 5 \
+-q /home/ly/desktop/bbr-trans/H2/Aligned.sortedByCoord.out.bam \
+/home/ly/desktop/bbr-trans/GenomeDir/kp \
+/home/ly/desktop/bbr-trans/H2/rsem_out
+
+
+htseq-count -r pos -m union -f bam -s no \
+-q 03align_out/sample2align.out.bam   >
+05htseq_out/sample2.htseq.out
+
+
+#Kallisto
+kallisto index -i bbr-trans/H1 /home/ly/desktop/bbr-trans/GenomeDir/kp.transcripts.fa
+
+kallisto quant -i /home/ly/desktop/bbr-trans/GenomeDir/kp.fa -o H1 \
+H1_paried_clean_R1.fastq.gz \
+H1_paried_clean_R2.fastq.gz
+
+
+快速定量分析
+#STAR+featurecount
+conda install subread
+featureCounts -p -M --fraction -a /home/ly/desktop/bbr-trans/GenomeDir/kp.gtf -t gene -o out_counts.txt -T 20 -g gene_id /home/ly/desktop/bbr-trans/H1/paired.sam
+
+差异表达
+mkdir 06deseq_out
+构建表达矩阵
+rsem-generate-data-matrix *_rsem.genes.results > output.matrix
+删除未检测到表达的基因
+awk 'BEGIN{printf "geneid\ta1\ta2\tb1\tb2\n"}{if($2+$3+$4+$5>0)print $0}'
+output.matrix >deseq2_imput.txt
+
+abundance_extimates_to_matrix.pl
+run_DE_analysis.pl
+
+
+#differential analysis in R
+input_data<-read.table('deseq2_input.txt',header=TURE, row.names=1)
+input _data<-round(input_data,digits=0)#取整数
+#准备工作
+input_data<-as.matrix(input_data)
+condition<-factor(c(rep("ctl",2),rep("exp",2)))
+coldata<-data.frame(row.names=colnames(input_data),condition)
+
+
+library(DESeq2)
+#构建deseq输入矩阵
+dds<-DESeqDataSetFromMatrix(countData=input_data,colData=coldata,design=~condition
+#DESeq2进行差异分析
+dds<-DESeq(dds)
+#提取结果
+res<-results(dds,alpha=0.05)
+summary(res)
+res<-res[order(res$padj),]
+resdata<-merge(as.data.frame(res),as.data.frame(counts(dds,normalized=TRUE)),by="row.names",sort=FLASE)
+names(resdata)[1]<-"Gene"
+
+#输出结果文件
+write.table(resdata,file="diffexpr-results.txt",sep="\t",quote=F,row.names=FLASE
+
+#可视化展示
+plotMA(res)
+
+maplot<-function(res,thresh=0.05,labelsig=TRUE,...){
+    with(res,plot(baseMean,log2FoldChange,pch=20,cex=.5,log="x",...))
+	with(subset(res,padj<thresh),points(baseMean,log2FoldChange,col="red",pch=20
+}
+png("diffexpr-maplot.png",1500,1000,pointsize=20)
+maplot(resdata,main="MAPlot")
+dev.off()
+
+
+#提取差异基因
+awk '{if($3>1 && $7<0.05)print $0}'diffexpr-result.txt
+awk '{if($3<-1 && $7<0.05)print $0}'diffexpr-result.txt
